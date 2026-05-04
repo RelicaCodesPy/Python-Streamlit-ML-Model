@@ -1,32 +1,57 @@
 import streamlit as st
+from streamlit_webrtc import webrtc_streamer
 from ultralytics import YOLO
+import av
 import cv2
 import numpy as np
 import time
-from collections import Counter
 
 # =========================
-# 🎨 PAGE CONFIG
+# 🎨 TECH UI THEME
 # =========================
-st.set_page_config(page_title="Live Object Detection & Tracking", layout="wide")
+st.set_page_config(page_title="AI Object Detection", layout="wide")
 
 st.markdown("""
 <style>
 .stApp {
     background: radial-gradient(circle at top, #0f2027, #203a43, #000000);
     color: #00ffff;
-    font-family: monospace;
+    font-family: 'Courier New', monospace;
 }
+
 h1 {
     text-align: center;
     color: #00ffff;
-    text-shadow: 0 0 10px #00ffff;
+    text-shadow: 0 0 15px #00ffff;
+}
+
+.block-container {
+    padding-top: 1rem;
+}
+
+.stButton>button {
+    background: black;
+    color: #00ffff;
+    border: 1px solid #00ffff;
+    border-radius: 10px;
+    box-shadow: 0 0 10px #00ffff;
+}
+
+.stButton>button:hover {
+    background: #00ffff;
+    color: black;
+}
+
+.footer {
+    text-align: center;
+    color: gray;
+    margin-top: 20px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📡 Live Object Detection & Tracking System")
-st.caption("YOLOv8 + Streamlit (Stable Version)")
+st.title("🤖 Live Object Detection & Tracking")
+st.write("Real-time AI detection using YOLOv8 + Webcam")
 
 # =========================
 # LOAD MODEL
@@ -38,115 +63,92 @@ def load_model():
 model = load_model()
 
 # =========================
-# SIDEBAR SETTINGS
+# SETTINGS PANEL
 # =========================
-st.sidebar.header("🎛 Control Panel")
+st.sidebar.title("⚙️ Settings")
 
-confidence = st.sidebar.slider("Confidence Threshold", 0.1, 1.0, 0.5)
-show_count = st.sidebar.toggle("Object Counting", True)
-alert_person = st.sidebar.toggle("Person Alert", True)
-
-# =========================
-# INPUT MODE
-# =========================
-mode = st.sidebar.selectbox("Input Mode", ["Image", "Video"])
+confidence = st.sidebar.slider("Confidence", 0.1, 1.0, 0.5)
+track_toggle = st.sidebar.toggle("Enable Tracking", True)
+save_frame = st.sidebar.button("📸 Save Snapshot")
+alert_person = st.sidebar.toggle("Alert: Detect Person", False)
 
 # =========================
-# IMAGE MODE
+# GLOBAL STATE
 # =========================
-if mode == "Image":
-    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png"])
-
-    if uploaded_file:
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, 1)
-
-        results = model.predict(img, conf=confidence)
-        annotated = results[0].plot()
-
-        boxes = results[0].boxes
-
-        # =========================
-        # OBJECT COUNTING
-        # =========================
-        if boxes is not None and show_count:
-            names = model.names
-            counts = Counter([names[int(c)] for c in boxes.cls])
-
-            y = 30
-            for obj, num in counts.items():
-                cv2.putText(annotated, f"{obj}: {num}",
-                            (10, y), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7, (0, 255, 255), 2)
-                y += 25
-
-        # =========================
-        # PERSON ALERT
-        # =========================
-        if alert_person and boxes is not None:
-            if any(int(c) == 0 for c in boxes.cls):
-                cv2.putText(annotated, "⚠ PERSON DETECTED",
-                            (10, 100),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1, (0, 0, 255), 3)
-
-        st.image(annotated, channels="BGR")
+frame_counter = 0
+last_saved = 0
 
 # =========================
-# VIDEO MODE
+# VIDEO CALLBACK
 # =========================
-elif mode == "Video":
-    video_file = st.file_uploader("Upload Video", type=["mp4"])
+def video_frame_callback(frame):
+    global frame_counter, last_saved
 
-    if video_file:
-        temp_path = "temp_video.mp4"
+    img = frame.to_ndarray(format="bgr24")
 
-        with open(temp_path, "wb") as f:
-            f.write(video_file.read())
+    # YOLO Detection + Tracking
+    results = model.track(
+        img,
+        persist=track_toggle,
+        conf=confidence,
+        verbose=False
+    )
 
-        st.video(temp_path)
+    annotated_frame = results[0].plot()
 
-        cap = cv2.VideoCapture(temp_path)
+    # =========================
+    # OBJECT COUNTING
+    # =========================
+    boxes = results[0].boxes
+    count = len(boxes) if boxes is not None else 0
 
-        stframe = st.empty()
+    cv2.putText(
+        annotated_frame,
+        f"Objects: {count}",
+        (10, 35),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (0, 255, 255),
+        2
+    )
 
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+    # =========================
+    # ALERT SYSTEM (PERSON)
+    # =========================
+    if alert_person and boxes is not None:
+        for c in boxes.cls:
+            if int(c) == 0:  # person
+                cv2.putText(
+                    annotated_frame,
+                    "⚠ PERSON DETECTED!",
+                    (10, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 0, 255),
+                    3
+                )
 
-            frame = cv2.resize(frame, (640, 480))
+    # =========================
+    # SAVE FRAME
+    # =========================
+    if save_frame:
+        timestamp = int(time.time())
+        filename = f"capture_{timestamp}.jpg"
+        cv2.imwrite(filename, annotated_frame)
 
-            results = model.predict(frame, conf=confidence)
-            annotated = results[0].plot()
-
-            boxes = results[0].boxes
-
-            # COUNTING
-            if boxes is not None and show_count:
-                names = model.names
-                counts = Counter([names[int(c)] for c in boxes.cls])
-
-                y = 30
-                for obj, num in counts.items():
-                    cv2.putText(annotated, f"{obj}: {num}",
-                                (10, y), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.7, (0, 255, 255), 2)
-                    y += 25
-
-            # ALERT
-            if alert_person and boxes is not None:
-                if any(int(c) == 0 for c in boxes.cls):
-                    cv2.putText(annotated, "⚠ PERSON DETECTED",
-                                (10, 100),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1, (0, 0, 255), 3)
-
-            stframe.image(annotated, channels="BGR")
-
-        cap.release()
+    return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
 
 # =========================
-# FOOTER
+# START STREAM
 # =========================
-st.markdown("### ⚡ Powered by YOLOv8 + Streamlit + OpenCV")
+webrtc_streamer(
+    key="ai-detection",
+    video_frame_callback=video_frame_callback,
+    async_processing=True,
+    rtc_configuration={
+        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+    },
+    media_stream_constraints={"video": True, "audio": False},
+)
+
+st.markdown('<div class="footer">⚡ Powered by YOLOv8 | Streamlit | OpenCV</div>', unsafe_allow_html=True)
